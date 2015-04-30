@@ -1,4 +1,4 @@
-##**This is a fork**
+_This is a fork from [mongoose-encryption](https://github.com/joegoldbeck/mongoose-encryption)_
 
 mongoose-encryption
 ==================
@@ -62,6 +62,7 @@ encryption.config({
 ```
 
 And you're all set. You should be able to `find` and make `New` documents as normal, but you should not use the `lean` option on a `find` if you want the document to be authenticated. `findOne`, `findById`, etc..., as well as `save` and `create` also all work as normal. `update` will work fine on unencrypted and unauthenticated fields, but will not work correctly if encrypted or authenticated fields are involved.
+
 But in order for the document to be decrypted you must use the `registerKey(base64Key)` method, which will decrypt the document using the given key, after doing so you dont have to worry about the document's key anymore.
 
 
@@ -72,7 +73,6 @@ By default, the encrypted parts of documents are authenticated along with the `_
 userSchema.plugin(encrypt, {
     encryptionKey: encKey,
     signingKey: sigKey,
-    excludeFromEncryption: ['isAdmin'],
     additionalAuthenticatedFields: ['isAdmin']
 });
 ```
