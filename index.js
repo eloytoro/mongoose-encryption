@@ -10,9 +10,9 @@
     var dotty = require('dotty');
     var bufferEqual = require('buffer-equal-constant-time');
 
-
     // Constants //
 
+    var SIGNING_KEY;
     var ENCRYPTION_ALGORITHM = 'aes-256-cbc';
     var IV_LENGTH = 16;
     var AAC_LENGTH = 32;
@@ -27,12 +27,6 @@
 
     var isEmbeddedDocument = function (doc) {
         return doc.constructor.name === 'EmbeddedDocument';
-    };
-
-    var deriveKey = function (master, type) {
-        var hmac = crypto.createHmac('sha512', master);
-        hmac.update(type);
-        return new Buffer(hmac.digest());
     };
 
     var clearBuffer = function (buf) {
@@ -71,7 +65,9 @@
     // Exported Plugin //
 
     var mongoosePlugin = module.exports = function(schema, options) {
-        var details, encryptedFields, excludedFields, authenticatedFields, encryptionKey, signingKey, path;
+        var details, encryptedFields, excludedFields, authenticatedFields, path;
+
+        options = options || {};
 
         _.defaults(options, {
             middleware: true, // allow for skipping middleware with false
@@ -79,47 +75,9 @@
             decryptPostSave: true // allow for skipping the decryption after save for improved performance
         });
 
-        // Encryption Keys //
-
-        if (options.secret) {
-            if (options.encryptionKey || options.signingKey) {
-                throw new Error('if options.secret is used, then options.encryptionKey and options.signingKey must not be included');
-            } else {
-                encryptionKey = drop256(deriveKey(options.secret, 'enc'));
-                signingKey = deriveKey(options.secret, 'sig');
-            }
-        } else {
-            if (!options.encryptionKey || !options.signingKey) {
-                throw new Error('must provide either options.secret or both options.encryptionKey and options.signingKey');
-            } else {
-                encryptionKey = new Buffer(options.encryptionKey, 'base64');
-                if (encryptionKey.length !== 32) {
-                    throw new Error('options.encryptionKey must be a a 32 byte base64 string');
-                }
-                signingKey = new Buffer(options.signingKey, 'base64');
-                if (signingKey.length !== 64) {
-                    throw new Error('options.signingKey must be a a 64 byte base64 string');
-                }
-            }
-        }
-
-
-        // Deprecated options
-
-        if (options.fields) {
-            options.encryptedFields = options.fields;
-            console.warn('options.fields has been deprecated. please use options.encryptedFields');
-        }
-        if (options.exclude) {
-            options.excludeFromEncryption = options.exclude;
-            console.warn('options.fields has been deprecated. please use options.excludeFromEncryption');
-        }
-
-
         // Check no disallowed characters used in options
 
         var fieldsUsedInOptions = _.compact(_.union(
-            options.encryptedFields,
             options.excludeFromEncryption,
             options.additionalAuthenticatedFields
         ));
@@ -127,26 +85,6 @@
         if (_.any(fieldsUsedInOptions, function(field){ return field.indexOf('.') !== -1 })) {
             throw new Error("Field names containing '.' are not currently supported")
         }
-
-
-        // Encryption Options //
-
-        if (options.encryptedFields) {
-            encryptedFields = _.difference(options.encryptedFields, ['_ct']);
-        } else {
-            excludedFields = _.union(['_id', '_ct'], options.excludeFromEncryption);
-            encryptedFields = _.chain(schema.paths)
-            .filter(function(pathDetails) { // exclude indexed fields
-                return !pathDetails._index })
-                .pluck('path') // get path name
-                .difference(excludedFields) // exclude excluded fields
-                .map(function(path) { // get the top level field
-                    return path.split('.')[0]
-                })
-                .uniq()
-                .value()
-        }
-
 
         // Authentication Options //
 
@@ -157,8 +95,6 @@
         } else {
             authenticatedFields = baselineAuthenticateFields;
         }
-
-
 
 
         // Augment Schema //
@@ -178,13 +114,28 @@
             });
         }
 
+        // Encryption Options //
 
+        encryptedFields = _.chain(schema.paths)
+            .filter(function(path) { // exclude indexed fields
+                var isEncrypt = path.options.encrypt ||
+                    (path.caster && path.caster.options.encrypt);
+                return !path._index && isEncrypt;
+            })
+            .pluck('path') // get path name
+            .map(function(path) { // get the top level field
+                return path.split('.')[0]
+            })
+            .uniq()
+            .value()
 
         // Authentication Helper Functions //
 
         var computeAC = function(doc, fields, version, modelName) {
             // HMAC-SHA512-drop-256
-            var hmac = crypto.createHmac('sha512', signingKey);
+            var hmac = SIGNING_KEY ?
+                crypto.createHmac('sha512', SIGNING_KEY) :
+                crypto.createHash('sha512');
 
             if (!(fields instanceof Array)){
                 throw new Error('fields must be an array');
@@ -256,9 +207,6 @@
                             }
                         }
                     }
-                    if (this.isSelected('_ct')){
-                        this.decryptSync.call(data);
-                    }
                 } catch (e) {
                     err = e;
                 }
@@ -289,6 +237,7 @@
                             }
                         }
                     });
+                    that.key = undefined;
                 } else if (allAuthenticationFieldsSelected(this) && !isEmbeddedDocument(this)) { // _ct is not selected but all authenticated fields are. cannot get hit in current version.
                     this.sign(next);
                 } else {
@@ -314,13 +263,27 @@
             }
         }
 
-
-
         // Encryption Instance Methods //
+
+        schema.methods.keygen = function (secret) {
+            var hmac = crypto.createHmac('sha256', SIGNING_KEY);
+            hmac.update(secret);
+            var digested = hmac.digest();
+            this._key = digested;
+            return digested.toString('base64');
+        };
+
+        schema.methods.registerKey = function (encryptionKey) {
+            this._key = new Buffer(encryptionKey, 'base64');
+            if (_.isFunction(this.decryptSync()))
+                this.decryptSync();
+        };
 
         schema.methods.encrypt = function(cb) {
             var that = this;
-            // generate random iv
+            var encryptionKey = this._key;
+            if (!encryptionKey)
+                return cb(new Error('No secret defined for document: ' + this.get('_id')));
             crypto.randomBytes(IV_LENGTH, function(err, iv) {
                 var cipher, field, jsonToEncrypt, objectToEncrypt, val;
                 if (err) {
@@ -361,8 +324,10 @@
             cb();
         };
 
-        schema.methods.decryptSync = function() {
+        schema.methods.decryptSync = function () {
             var ct, ctWithIV, decipher, iv, idString, decryptedObject, decryptedObjectJSON, decipheredVal;
+            var encryptionKey = this._key;
+            if (!encryptionKey) return;
             if (this._ct) {
                 ctWithIV = this._ct.buffer || this._ct;
                 iv = ctWithIV.slice(VERSION_LENGTH, VERSION_LENGTH + IV_LENGTH);
@@ -386,9 +351,6 @@
                 this._ct = undefined;
             }
         };
-
-
-
 
         // Authentication Instance Methods //
 
@@ -434,6 +396,7 @@
                 throw new Error('Authentication failed');
             }
         };
+
     };
 
 
@@ -448,6 +411,10 @@
                 decryptEmbeddedDocs(doc);
             }
         });
+    };
+
+    module.exports.config = function (opts) {
+        SIGNING_KEY = opts.signingKey;
     };
 
     module.exports.migrations = function(schema, options) {
