@@ -270,13 +270,7 @@
             hmac.update(secret);
             var digested = hmac.digest();
             this._key = digested;
-            return digested.toString('base64');
-        };
-
-        schema.methods.registerKey = function (encryptionKey) {
-            this._key = new Buffer(encryptionKey, 'base64');
-            if (_.isFunction(this.decryptSync()))
-                this.decryptSync();
+            return digested;
         };
 
         schema.methods.encrypt = function(cb) {
@@ -324,8 +318,9 @@
             cb();
         };
 
-        schema.methods.decryptSync = function () {
+        schema.methods.decryptSync = function (secret) {
             var ct, ctWithIV, decipher, iv, idString, decryptedObject, decryptedObjectJSON, decipheredVal;
+            this._key = secret || this._key;
             var encryptionKey = this._key;
             if (!encryptionKey) return;
             if (this._ct) {
