@@ -324,7 +324,7 @@
             var encryptionKey = this._key;
             if (!encryptionKey) return;
             if (this._ct) {
-                ctWithIV = this._ct.buffer || this._ct;
+                ctWithIV = this._ct;
                 iv = ctWithIV.slice(VERSION_LENGTH, VERSION_LENGTH + IV_LENGTH);
                 ct = ctWithIV.slice(VERSION_LENGTH + IV_LENGTH, ctWithIV.length);
                 decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, encryptionKey, iv);
