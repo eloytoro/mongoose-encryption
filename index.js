@@ -119,7 +119,9 @@
         encryptedFields = _.chain(schema.paths)
             .filter(function(path) { // exclude indexed fields
                 var isEncrypt = path.options.encrypt ||
-                    (path.caster && path.caster.options.encrypt);
+                    (path.caster &&
+                     path.caster.options &&
+                     path.caster.options.encrypt);
                 return !path._index && isEncrypt;
             })
             .pluck('path') // get path name
